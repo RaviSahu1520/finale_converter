@@ -25,6 +25,7 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
 import zipfile
 import fitz  # PyMuPDF
+from docx2pdf import convert as docx2pdf_convert  # Added for better DOCX->PDF
 
 # --- CONFIGURATION ---
 BASE_DIR = Path(__file__).parent.resolve()
@@ -73,9 +74,15 @@ def get_unique_filename(filename):
     name, ext = os.path.splitext(filename)
     return f"{name}_{uuid.uuid4().hex[:8]}{ext}"
 
-# [Previous utility functions remain the same]
 def libreoffice_available():
     return shutil.which("libreoffice") or shutil.which("soffice")
+
+def docx2pdf_available():
+    try:
+        import docx2pdf
+        return True
+    except ImportError:
+        return False
 
 def libreoffice_convert_to_pdf(input_path, output_path):
     try:
@@ -142,7 +149,6 @@ def pdf_to_word():
         return redirect(url_for('index'))
     
     try:
-        # Use original filename for output, but unique filename for processing
         original_filename = secure_filename(file.filename)
         temp_filename = get_unique_filename(original_filename)
         temp_pdf = UPLOAD_FOLDER / temp_filename
@@ -178,20 +184,31 @@ def word_to_pdf():
         temp_word = UPLOAD_FOLDER / temp_filename
         file.save(temp_word)
         output_pdf = TEMP_FOLDER / f"{temp_word.stem}.pdf"
-        
         output_filename = get_output_filename(original_filename, 'pdf')
-        
-        if libreoffice_available():
+
+        # Try docx2pdf first for best formatting
+        if docx2pdf_available():
+            try:
+                docx2pdf_convert(str(temp_word), str(output_pdf))
+                pdf_path = output_pdf
+            except Exception as e:
+                logger.error(f"docx2pdf failed: {e}")
+                if libreoffice_available():
+                    pdf_path = libreoffice_convert_to_pdf(temp_word, output_pdf)
+                else:
+                    pdf_path = plaintext_docx_to_pdf(temp_word, output_pdf)
+                    flash("Notice: Only text was preserved (LibreOffice/docx2pdf not available).", "warning")
+        elif libreoffice_available():
             pdf_path = libreoffice_convert_to_pdf(temp_word, output_pdf)
         else:
             pdf_path = plaintext_docx_to_pdf(temp_word, output_pdf)
-            flash("Notice: Only text was preserved (LibreOffice not available).", "warning")
-            
+            flash("Notice: Only text was preserved (LibreOffice/docx2pdf not available).", "warning")
+
         temp_word.unlink()
         return send_file(pdf_path, as_attachment=True, download_name=output_filename)
     except Exception as e:
         logger.exception(e)
-        flash("Conversion failed. Please ensure LibreOffice is installed for best results.", "error")
+        flash("Conversion failed. Please ensure docx2pdf or LibreOffice is installed for best results.", "error")
         return redirect(url_for('index'))
 
 @app.route('/pdf_to_image', methods=['POST'])
